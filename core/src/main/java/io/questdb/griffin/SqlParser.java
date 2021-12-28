@@ -876,7 +876,7 @@ public final class SqlParser {
             parseSelectFrom(lexer, model, masterModel);
             tok = setModelAliasAndTimestamp(lexer, model);
 
-            // expect [latest by]
+            // expect [latest by] (deprecated syntax)
             if (tok != null && isLatestKeyword(tok)) {
                 parseLatestBy(lexer, model);
                 tok = optTok(lexer);
@@ -894,6 +894,9 @@ public final class SqlParser {
         // expect [where]
 
         if (tok != null && isWhereKeyword(tok)) {
+            if (model.getLatestByType() == QueryModel.LATEST_BY_NEW) {
+                throw SqlException.$((lexer.lastTokenPosition()), "unexpected where clause after 'latest on'");
+            }
             ExpressionNode expr = expr(lexer, model);
             if (expr != null) {
                 model.setWhereClause(expr);
@@ -901,6 +904,15 @@ public final class SqlParser {
             } else {
                 throw SqlException.$((lexer.lastTokenPosition()), "empty where clause");
             }
+        }
+
+        // expect [latest by] (new syntax)
+        if (tok != null && isLatestKeyword(tok)) {
+            if (model.getLatestByType() == QueryModel.LATEST_BY_DEPRECATED) {
+                throw SqlException.$((lexer.lastTokenPosition()), "mix of new and deprecated 'latest by' syntax");
+            }
+            parseLatestByNew(lexer, model);
+            tok = optTok(lexer);
         }
 
         // expect [sample by]
@@ -971,7 +983,7 @@ public final class SqlParser {
             }
         }
 
-        //expect [group by]
+        // expect [group by]
 
         if (tok != null && isGroupKeyword(tok)) {
             expectBy(lexer);
@@ -1216,12 +1228,52 @@ public final class SqlParser {
     }
 
     private void parseLatestBy(GenericLexer lexer, QueryModel model) throws SqlException {
+        CharSequence tok = optTok(lexer);
+        if (tok != null) {
+            if (isByKeyword(tok)) {
+                lexer.unparse();
+                parseLatestByDeprecated(lexer, model);
+                return;
+            }
+            if (isOnKeyword(tok)) {
+                lexer.unparse();
+                parseLatestByNew(lexer, model);
+                return;
+            }
+        }
+        throw SqlException.$((lexer.lastTokenPosition()), "'on' or 'by' expected");
+    }
+
+    private void parseLatestByDeprecated(GenericLexer lexer, QueryModel model) throws SqlException {
         expectBy(lexer);
         CharSequence tok;
         do {
             model.addLatestBy(expectLiteral(lexer));
             tok = SqlUtil.fetchNext(lexer);
         } while (Chars.equalsNc(tok, ','));
+
+        model.setLatestByType(QueryModel.LATEST_BY_DEPRECATED);
+
+        if (tok != null) {
+            lexer.unparse();
+        }
+    }
+
+    private void parseLatestByNew(GenericLexer lexer, QueryModel model) throws SqlException {
+        // on <timestamp>
+        expectTok(lexer, "on");
+        final ExpressionNode timestamp = expectLiteral(lexer);
+        model.setTimestamp(timestamp);
+        // partition by <columns>
+        expectTok(lexer, "partition");
+        expectTok(lexer, "by");
+        CharSequence tok;
+        do {
+            model.addLatestBy(expectLiteral(lexer));
+            tok = SqlUtil.fetchNext(lexer);
+        } while (Chars.equalsNc(tok, ','));
+
+        model.setLatestByType(QueryModel.LATEST_BY_NEW);
 
         if (tok != null) {
             lexer.unparse();
